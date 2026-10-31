@@ -1,0 +1,16 @@
+.tools/
+.gradle/
+local.properties
+**/build/
+app/src/main/jniLibs/
+*.jks
+*.keystore
+*.apk
+*.idsig
+*.log
+artifacts/
+
+# Local account data and IDE files
+**/accounts/*.json
+.idea/
+.vscode/

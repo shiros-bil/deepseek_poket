@@ -1,0 +1,21 @@
+{
+  "source": "https://dl.google.com/android/repository/android-ndk-r28c-windows.zip",
+  "files": [
+    {
+      "file": "NOTICE",
+      "sha256": "faf0dc52cf6ce9ab09a04b0c074a378dd2565ee1ed9bc1179d83793bcdba012e"
+    },
+    {
+      "file": "aarch64-linux-android\\libc++_shared.so",
+      "sha256": "ab4e6c71b96b851de45a8a9bd86369e7dbc2130a44b3b4520564be94847910f2"
+    },
+    {
+      "file": "arm-linux-androideabi\\libc++_shared.so",
+      "sha256": "10ee48131d6742899619f7cfb3b8df150ad787d723c766a3fb80d4bb275711ff"
+    },
+    {
+      "file": "x86_64-linux-android\\libc++_shared.so",
+      "sha256": "e4cd73c8a3607269f3be58d15c21f78bff112e27f9398d6261e5f965668f8746"
+    }
+  ]
+}

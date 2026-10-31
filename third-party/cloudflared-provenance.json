@@ -1,0 +1,26 @@
+{
+  "source": "https://github.com/cloudflare/cloudflared",
+  "tag": "2026.10.5",
+  "commit": "99b2eb2c0152862af2b1abf7c7b4e2170a46b9fe",
+  "go": "1.27.3",
+  "ndk": "r27c",
+  "adapter": "native/cloudflared/pocket_dns_android.go",
+  "license": "Apache-2.0",
+  "binaries": [
+    {
+      "path": "app/src/main/jniLibs/arm64-v8a/libcloudflared.so",
+      "sha256": "34b154adfc32fae19a1f03951831537f62a29cc666636e8022c3843f80b2c554",
+      "bytes": 29081960
+    },
+    {
+      "path": "app/src/main/jniLibs/armeabi-v7a/libcloudflared.so",
+      "sha256": "96c83dffdd35bb8861f64c05b837f22e8203debb64e6f84f96528d98e6852317",
+      "bytes": 27506356
+    },
+    {
+      "path": "app/src/main/jniLibs/x86_64/libcloudflared.so",
+      "sha256": "40684aa3ba5b88d09b9c7fed94e4c7141140d1f33515628c37b8ffa13b02bf55",
+      "bytes": 31085960
+    }
+  ]
+}

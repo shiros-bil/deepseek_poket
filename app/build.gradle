@@ -1,0 +1,16 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'ai.freedeepseek.pocket'
+    compileSdk 34
+    defaultConfig {
+        applicationId 'ai.freedeepseek.pocket'
+        minSdk 26
+        targetSdk 34
+        versionCode 9
+        versionName '1.3.3'
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    packaging { jniLibs { useLegacyPackaging = true } }
+    buildTypes { release { minifyEnabled false } }
+}
