@@ -1,59 +1,92 @@
 # DeepSeek Pocket
 
-[Русская версия](README.ru.md) · [Latest release](https://github.com/shiros-bil/deepsee_poket/releases/latest)
+[Русская версия](README.ru.md) · [Latest APK release](https://github.com/shiros-bil/deepseek_poket/releases/latest)
 
-DeepSeek Pocket runs an OpenAI-compatible API server on an Android phone. It supports Android 8 and newer, and includes ARM64, ARMv7, and x86_64 builds.
+DeepSeek Pocket turns an Android phone into a small, OpenAI-compatible API endpoint backed by the DeepSeek web app. It is an independent, experimental adapter and a practical example for testing AI client requests routed through a phone. It is not an official DeepSeek API or service. Upstream behavior, account access, rate limits, and compatibility can change without notice.
 
-## Download
+## What it does
 
-Install the APK from the [latest GitHub Release](https://github.com/shiros-bil/deepsee_poket/releases/latest). The app can update an earlier version without removing its accounts or preferences.
+- Runs the API server on Android 8+ in a foreground service.
+- Exposes `deepseek-v4.1-flash` and `deepseek-v4.1-flash-thinking` with web search enabled.
+- Provides OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages compatible endpoints.
+- Supports streaming, tools, and images where the upstream web app and client allow them.
+- Lets clients on the same phone, local network, or an optional Cloudflare Tunnel send test requests to the phone.
 
-## Quick start
+## Download and install on Android
 
-1. Install the APK and add a DeepSeek account in **Accounts**.
-2. Start the API server in **Overview**.
-3. Use `http://127.0.0.1:9655/v1` as the API base URL on the phone.
-4. The API key is optional by default. Set a key in **Settings** when you expose the API to a network.
+Download `DeepSeek-Pocket-1.3.3.apk` from the [latest release](https://github.com/shiros-bil/deepseek_poket/releases/latest), open it on the phone, and approve installation from that source if Android asks. Start the app, add a DeepSeek account, then start the API server.
 
-The API offers `deepseek-v4.1-flash` and `deepseek-v4.1-flash-thinking`. Web search is enabled for both. It supports OpenAI Chat Completions, Anthropic Messages, and Responses formats, including tools, images, and streaming.
+For a client running on the same phone, use:
 
-## Public access
+```text
+http://127.0.0.1:9655/v1
+```
 
-Enable **Settings → Public API** to start a Cloudflare Tunnel with the server. The HTTPS address appears in Overview.
+For a client on a PC on the same Wi-Fi, enable LAN access in the app and use the phone's local IP address, for example `http://192.168.1.25:9655/v1`. The exact address depends on your network. Set an API key in the app before exposing the endpoint to a network. A Cloudflare Tunnel can provide HTTPS access from outside the local network.
 
-- **Quick Tunnel** needs no Cloudflare account, but its address changes when restarted. Quick Tunnels do not support SSE; set `stream: false` in the client.
-- **Named Tunnel** uses your Cloudflare token and hostname. It supports a stable hostname and SSE.
-- Browser origins can be unrestricted or limited to an allowlist. An API key is recommended when the address is public.
+## Test the endpoints
+
+List models:
+
+```bash
+curl http://127.0.0.1:9655/v1/models
+```
+
+Send a chat completion from the phone (replace the model if needed):
+
+```bash
+curl http://127.0.0.1:9655/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"Hello"}],"stream":false}'
+```
+
+When an API key is configured, include `-H 'Authorization: Bearer YOUR_API_KEY'`. For the Anthropic-compatible endpoint use `POST /v1/messages`; for OpenAI Responses use `POST /v1/responses`. Other useful routes are `GET /health`, `GET /readyz`, `GET /v1/model-capabilities`, and `GET /v1/sessions`.
+
+## Use the project on a PC
+
+The API server itself runs on Android; cloning this repository does not turn a PC into a DeepSeek server. A PC is used to inspect or build the Android app, or to send test requests to the server running on a phone.
+
+1. Install Git, JDK 17, Android Studio, and Android SDK Platform 34 / Build Tools 34.0.0. Install NDK r27c if rebuilding native components.
+2. In PowerShell, clone the project and its upstream API submodule:
+
+   ```powershell
+   git clone --recurse-submodules https://github.com/shiros-bil/deepseek_poket.git
+   cd deepseek_poket
+   ```
+
+3. Open the folder in Android Studio and allow Gradle sync, or build from PowerShell:
+
+   ```powershell
+   ./scripts/build.ps1
+   python scripts/verify_apk.py
+   ```
+
+4. Install the generated APK on a connected Android phone, or download the release APK directly. See [build instructions](docs/BUILDING.md) for native libraries, signing, and a fresh checkout.
+5. To send requests from the PC to the phone, connect both devices to the same network, enable LAN access on the phone, and point your client to `http://PHONE_IP:9655/v1`.
+
+## API compatibility and limits
+
+The app adapts requests to the DeepSeek web client; it does not provide the official DeepSeek API. Models, account availability, response behavior, and limits are controlled by the upstream service. `temperature`, `max_tokens`, `max_completion_tokens`, and `max_output_tokens` are passed as high-priority behavioral instructions. They are hints: the web client does not expose decoder temperature, and exact token limits cannot be enforced.
+
+Requests should include the current conversation's message history when the client expects continuity. A request containing only one message cannot identify which earlier chat it belongs to. See [chat settings](README.ru.md#настройки-чата) or the app settings for history replay. A known content-filter placeholder may trigger one retry; recovery is not guaranteed.
+
+## Network access
+
+Enable **Settings → Public API** to start a Cloudflare Tunnel.
+
+- A Quick Tunnel requires no Cloudflare account, but its address changes on restart and it does not support SSE. Use `stream: false` with it.
+- A Named Tunnel uses your Cloudflare token and hostname and supports a stable address and SSE.
+- Restrict browser origins where appropriate and set an API key before exposing the endpoint. Anyone who can reach an unprotected public URL may send requests through your account.
 
 See [Cloudflare Quick Tunnel limitations](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/).
 
-## Chat settings
+## Documentation
 
-Settings can be saved only while the server is stopped. If you leave Settings with unsaved changes, the app offers to apply or discard them.
-
-The optional history settings replay the conversation sent by the API client. Clients should send the current conversation's messages to preserve context. A request with only one message cannot tell the server whether it belongs to a previous chat, so it gets a separate context.
-
-The API also accepts `temperature`, `max_tokens`, `max_completion_tokens`, and `max_output_tokens`. The app adds these values to a high-priority prompt block. They are behavioral hints: DeepSeek Web does not expose decoder temperature controls, and token limits cannot be enforced exactly.
-
-When DeepSeek returns a known content-filter placeholder, the API can retry once in a fresh chat with the request's supplied conversation and any captured partial answer. Streaming text is buffered until the final response state is checked. Recovery is not guaranteed.
-
-## Build from source
-
-Requirements: Java 17, Android SDK Platform 34, Android Build Tools 34.0.0, Gradle 8.7, and Android NDK r27c. Native Node.js Mobile and cloudflared libraries are excluded from Git; follow the build instructions in [`docs/BUILDING.md`](docs/BUILDING.md).
-
-```powershell
-./scripts/build.ps1
-python scripts/verify_apk.py
-```
-
-The original API is included as the `upstream` Git submodule. Third-party notices and licenses are in [`THIRD-PARTY.md`](THIRD-PARTY.md) and the app assets.
-
-## Project documents
-
+- [Build from source](docs/BUILDING.md)
+- [Install the APK](docs/INSTALLATION.md)
 - [Russian README](README.ru.md)
-- [Build instructions](docs/BUILDING.md)
-- [Installation guide](docs/INSTALLATION.md)
-- [Release notes](CHANGELOG.md)
+- [Changelog](CHANGELOG.md)
+- [Third-party notices](THIRD-PARTY.md)
 
 ## License
 
