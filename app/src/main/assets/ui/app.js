@@ -41,7 +41,6 @@ function changePreferences(){
 function updateNavigationIndicator(){const nav=document.querySelector('nav'),button=nav.querySelector('button.active');if(button){const n=nav.getBoundingClientRect(),b=button.getBoundingClientRect();nav.style.setProperty('--nav-indicator-x',(b.left-n.left+b.width/2)+'px');}}
 function waitForAnimation(animation,duration){
  if(animation.finished&&typeof animation.finished.then==='function')return animation.finished.catch(()=>{});
- // Older Android System WebView supports animate(), but not Animation.finished.
  return new Promise(resolve=>{let done=false;const finish=()=>{if(done)return;done=true;clearTimeout(timer);resolve();};const timer=setTimeout(finish,duration+60);animation.onfinish=finish;animation.oncancel=finish;});
 }
 async function navigate(page){

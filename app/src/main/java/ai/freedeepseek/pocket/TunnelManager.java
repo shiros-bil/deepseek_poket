@@ -10,8 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.regex.*;
 
-/** Owns the packaged cloudflared child process for the foreground service. */
-final class TunnelManager {
+ final class TunnelManager {
     private final Context context;
     private final Store store;
     private final Runnable changed;

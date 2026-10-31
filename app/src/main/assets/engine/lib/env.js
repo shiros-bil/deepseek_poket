@@ -1,8 +1,4 @@
 'use strict';
-// Minimal .env support (KEY=value lines, optional `export`, optional quotes,
-// # comments) so the documented "copy .env.example to .env" workflow works
-// without dependencies. Variables already present in the environment always
-// win over the file. Shared by server.js and the helper scripts.
 
 const fs = require('fs');
 

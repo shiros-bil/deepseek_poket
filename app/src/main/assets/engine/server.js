@@ -1,14 +1,4 @@
 #!/usr/bin/env node
-/**
- * OpenAI-compatible API server wrapping DeepSeek Web API
- * Supports BOTH streaming (SSE) and non-streaming modes
- * Includes tool calling: injects tool definitions into system prompt,
- * parses LLM text responses for TOOL_CALL patterns, returns OpenAI tool_calls format.
- * 
- * Per-agent sessions: each unique `user` field gets its own DeepSeek web session.
- * Auto-reset: sessions reset when message chain reaches 100 messages or age > 2 hours.
- * Listens on 127.0.0.1:9655 by default (HOST is configurable)
- */
 
 const http = require('http');
 const fs = require('fs');
@@ -21,7 +11,6 @@ const { spawnSync } = require('child_process');
 const { solvePOW } = require('./lib/pow');
 const { loadDotEnv } = require('./lib/env');
 
-// Real environment variables always win over .env.
 if (require.main === module) loadDotEnv(path.join(__dirname, '.env'));
 
 function envNumber(name, fallback, min = 0) {
@@ -30,20 +19,12 @@ function envNumber(name, fallback, min = 0) {
     return Number.isFinite(value) ? Math.max(min, value) : fallback;
 }
 
-// DeepSeek Web endpoints. Overridable for corporate mirrors and offline tests.
 const DS_BASE_URL = String(process.env.DEEPSEEK_BASE_URL || 'https://chat.deepseek.com').replace(/\/+$/, '');
 function dsUrl(pathname) { return `${DS_BASE_URL}${pathname}`; }
 
-// Per-DeepSeek-request network timeout. Plain fetch() has NO default timeout, so a
-// stalled upstream would hang the inbound request (and pin the account) forever.
 const DS_FETCH_TIMEOUT_MS = envNumber('DEEPSEEK_FETCH_TIMEOUT_MS', 60000, 1000);
-// A completion is a long-lived SSE stream: thinking answers routinely take more
-// than a minute, so the stream is bounded by inactivity instead of total time.
 const DS_STREAM_IDLE_TIMEOUT_MS = envNumber('DEEPSEEK_STREAM_IDLE_TIMEOUT_MS', DS_FETCH_TIMEOUT_MS, 1000);
 const DS_STREAM_MAX_MS = envNumber('DEEPSEEK_STREAM_MAX_MS', 10 * 60 * 1000, 1000);
-// While a streamed request has nothing to send yet (a tool turn is buffered,
-// or DeepSeek is slow to start), an SSE comment is written after this much
-// silence so clients and proxies do not drop the idle connection.
 const STREAM_KEEPALIVE_MS = envNumber('DEEPSEEK_STREAM_KEEPALIVE_MS', 10000, 1000);
 function timeoutError(message) {
     const error = new Error(message);
@@ -51,8 +32,6 @@ function timeoutError(message) {
     return error;
 }
 
-// Makes `controller` follow an outer signal (the inbound request being
-// cancelled). Works on Node 18, which lacks AbortSignal.any.
 function followSignal(controller, signal) {
     if (!signal) return;
     if (signal.aborted) controller.abort(signal.reason);
@@ -63,8 +42,6 @@ function throwIfAborted(signal) {
     if (signal?.aborted) throw signal.reason || new Error('request aborted');
 }
 
-// Short JSON request (PoW, session create): bounded by DS_FETCH_TIMEOUT_MS
-// including the body, and cancelled together with the inbound request.
 function dsFetch(url, options = {}, timeoutMs = DS_FETCH_TIMEOUT_MS) {
     const controller = new AbortController();
     followSignal(controller, options.signal);
@@ -72,9 +49,6 @@ function dsFetch(url, options = {}, timeoutMs = DS_FETCH_TIMEOUT_MS) {
     return fetch(url, { ...options, signal: controller.signal });
 }
 
-// Starts a streaming completion request. The returned controller lets the SSE
-// reader enforce an idle timeout; options.signal (the inbound request) cancels
-// the upstream generation when the client disconnects.
 async function dsFetchStream(url, options = {}) {
     const controller = new AbortController();
     followSignal(controller, options.signal);
@@ -88,9 +62,6 @@ async function dsFetchStream(url, options = {}) {
     }
 }
 
-// Reads a (non-streaming) error body without trusting the upstream to finish
-// it: a stalled body must not pin the request, its session lock and its
-// concurrency slot forever.
 async function readUpstreamText(resp, timeoutMs = DS_FETCH_TIMEOUT_MS) {
     const timer = setTimeout(() => resp.abortController?.abort(timeoutError(`DeepSeek error body not received within ${timeoutMs}ms`)), timeoutMs);
     try {
@@ -102,8 +73,6 @@ async function readUpstreamText(resp, timeoutMs = DS_FETCH_TIMEOUT_MS) {
     }
 }
 
-// Iterates a response body, aborting it after DS_STREAM_IDLE_TIMEOUT_MS without
-// data or DS_STREAM_MAX_MS overall.
 async function* readStreamWithTimeouts(resp) {
     const controller = resp.abortController;
     const body = resp.body;
@@ -129,7 +98,7 @@ async function* readStreamWithTimeouts(resp) {
     }
 }
 
-const SERVER_HOST = os.hostname();  // Dynamic hostname detection
+const SERVER_HOST = os.hostname();
 const SERVER_PUBLIC_IP = (() => {
     try {
         const interfaces = os.networkInterfaces();
@@ -152,8 +121,6 @@ function loadProxyApiKey(env = process.env) {
     try {
         return fs.readFileSync(secretPath, 'utf8').trim();
     } catch (error) {
-        // A missing optional secret is equivalent to an unset key. Container
-        // deployments set REQUIRE_PROXY_API_KEY=1 and fail closed in main().
         if (error.code === 'ENOENT') return '';
         throw new Error(`Could not read PROXY_API_KEY_FILE (${secretPath}): ${error.message}`);
     }
@@ -184,9 +151,6 @@ function isProxyKeyMatch(suppliedKey, expectedKey) {
     return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
 }
 
-// Accepts the proxy key as `Authorization: Bearer <key>` (OpenAI clients,
-// Claude Code's ANTHROPIC_AUTH_TOKEN) or as `x-api-key: <key>` (Anthropic
-// SDKs and ANTHROPIC_API_KEY).
 function isProxyAuthorized(authorization, expectedKey = PROXY_API_KEY, apiKeyHeader = undefined) {
     if (!expectedKey) return true;
     if (typeof authorization === 'string' && authorization.startsWith('Bearer ')
@@ -217,7 +181,7 @@ function normalizeOrigin(origin) {
 
 const PROXY_CORS_ALLOW_ANY=isTruthy(process.env.PROXY_CORS_ALLOW_ANY);
 function isBrowserOriginAllowed(origin, allowedOrigins = PROXY_CORS_ORIGINS) {
-    if (!origin) return true; // curl, SDKs, and other non-browser clients
+    if (!origin) return true;
     const normalized = normalizeOrigin(origin);
     if (allowedOrigins.has(normalized)) return true;
     try {
@@ -237,11 +201,9 @@ function setCorsResponseHeaders(res, requestedHeaders = '') {
     res.setHeader('Access-Control-Expose-Headers', CONTEXT_COMPACTED_HEADER);
 }
 function markContextCompacted(res) {
-    // A live stream may already have sent its headers.
     if (!res.headersSent) res.setHeader(CONTEXT_COMPACTED_HEADER, 'true');
 }
 
-// === Per-Agent Session Store ===
 const STATS_FILE=process.env.POCKET_STATS_FILE;
 let totalMessages=0;
 try { if(STATS_FILE)totalMessages=JSON.parse(fs.readFileSync(STATS_FILE,'utf8')).totalMessages||0; } catch {}
@@ -249,23 +211,20 @@ function countMessage(){
  totalMessages++;
  if(STATS_FILE)try { fs.writeFileSync(STATS_FILE+'.tmp',JSON.stringify({totalMessages}),{mode:0o600});fs.renameSync(STATS_FILE+'.tmp',STATS_FILE); }catch(error){console.error('[DS-API] Could not save message count:',error.message);}
 }
-const sessions = new Map();  // keyed by agent ID (from `user` field)
+const sessions = new Map();
 const MAX_HISTORY_LENGTH = 15;
 const MAX_HISTORY_CHARS = 10000;
-const MAX_HISTORY_ENTRY_CHARS = 2000;  // per stored assistant answer
-const MAX_MESSAGE_DEPTH = 100;  // auto-reset after this many messages
-const SESSION_TTL_MS = 2 * 60 * 60 * 1000;  // 2 hours
+const MAX_HISTORY_ENTRY_CHARS = 2000;
+const MAX_MESSAGE_DEPTH = 100;
+const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 
-// === DeepSeek Web API Config — loaded from external config file ===
 const DS_CONFIG_PATH = process.env.DEEPSEEK_AUTH_PATH || path.join(__dirname, 'deepseek-auth.json');
 const DEFAULT_ACCOUNT_COOLDOWN_MS = Number(process.env.DEEPSEEK_ACCOUNT_COOLDOWN_MS || 10 * 60 * 1000);
 let DS_CONFIG = {};
 let dsHeaders = {};
 const accounts = [];
 let accountRoundRobin = 0;
-let inFlight = 0;  // concurrent in-flight completions (backpressure cap)
-// Overall wall-clock budget for one inbound request (caps the retry/continuation
-// loops), max concurrent completions, and the empty-response retry cap.
+let inFlight = 0;
 const REQUEST_DEADLINE_MS = Number(process.env.DEEPSEEK_REQUEST_DEADLINE_MS || 120000);
 const MAX_CONCURRENT = Number(process.env.DEEPSEEK_MAX_CONCURRENT || 24);
 const configuredEmptyRetries = Number(process.env.DEEPSEEK_MAX_RETRIES);
@@ -275,21 +234,14 @@ const MAX_EMPTY_RETRIES = Number.isFinite(configuredEmptyRetries)
 const MIN_UPSTREAM_PROMPT_CHARS = 16000;
 const MAX_UPSTREAM_PROMPT_CHARS = Number.MAX_SAFE_INTEGER;
 const MAX_SESSION_CONTEXT_CHARS = Number.MAX_SAFE_INTEGER;
-// Short cooldown for an account that DeepSeek throttled inside the stream
-// ("too many messages"); HTTP 401/403/429 keep DEEPSEEK_ACCOUNT_COOLDOWN_MS.
 const RATE_LIMIT_COOLDOWN_MS = envNumber('DEEPSEEK_RATE_LIMIT_COOLDOWN_MS', 60 * 1000, 1000);
 const DS_CLIENT_VERSION = process.env.DEEPSEEK_CLIENT_VERSION || '2.0.0';
-// Image understanding: DeepSeek Web reads images uploaded through its file
-// API and referenced by ref_file_ids. Live image upload/status/reference flow
-// was verified on 2026-10-07. Keep the opt-out explicit for deployments that
-// need to prevent upstream image uploads.
 function imageUploadEnabled(env = process.env) {
     const value = env.DEEPSEEK_IMAGE_UPLOAD;
     return value === undefined ? true : isTruthy(String(value));
 }
 const IMAGE_UPLOAD_ENABLED = imageUploadEnabled();
 const MAX_IMAGES_PER_REQUEST = Math.floor(envNumber('DEEPSEEK_MAX_IMAGES', 4, 1));
-// A 10 MB request body carries at most ~7.5 MB of base64-decoded images.
 const MAX_IMAGE_BYTES = Math.floor(envNumber('DEEPSEEK_MAX_IMAGE_BYTES', 7 * 1024 * 1024, 1024));
 const DS_FILE_TIMEOUT_MS = envNumber('DEEPSEEK_FILE_TIMEOUT_MS', 60000, 1000);
 const DS_FILE_POLL_MS = envNumber('DEEPSEEK_FILE_POLL_MS', 1000, 50);
@@ -373,10 +325,6 @@ function selectAccountForSession(session) {
     }
     const ready = accounts.filter(a => a.config.token && a.config.cookie && a.cooldownUntil <= now);
     if (ready.length > 0 && session.accountId) {
-        // A DeepSeek chat_session belongs to the auth account that created it.
-        // If that account disappeared, lost credentials, or is cooling down,
-        // never reuse its session id under a different account. While no
-        // other account is ready the chat is kept for when its account returns.
         resetRemoteSession(session);
         session.accountId = null;
     }
@@ -384,8 +332,6 @@ function selectAccountForSession(session) {
         const waiting = accounts.filter(a => a.config.token && a.config.cookie).sort((a, b) => a.cooldownUntil - b.cooldownUntil)[0];
         if (waiting) {
             const waitSec = Math.max(1, Math.ceil((waiting.cooldownUntil - now) / 1000));
-            // Tagged so the request handler returns 429 + Retry-After instead of a
-            // generic 500 (integrator backoff keys on the status code, not the text).
             const err = new Error(`All DeepSeek auth accounts are cooling down. Retry in ~${waitSec}s or import a fresh account with npm run auth:import.`);
             err.status = 429; err.retryAfter = waitSec; err.type = 'rate_limit';
             throw err;
@@ -399,9 +345,6 @@ function selectAccountForSession(session) {
     session.accountId = account.id;
     return account;
 }
-// Parse a Retry-After header value into a cooldown duration in ms, or null if
-// absent/unparseable. Supports both forms: delta-seconds (e.g. "120") and an
-// HTTP-date (e.g. "Wed, 21 Oct 2025 07:28:00 GMT"). Clamped to >= 1s.
 function parseRetryAfterMs(retryAfterRaw) {
     if (!retryAfterRaw) return null;
     const raw = String(retryAfterRaw).trim();
@@ -414,8 +357,6 @@ function markAccountFailure(account, status, reason = '', retryAfterRaw = null, 
     if (!account) return;
     account.failures++;
     if ([401, 403, 429].includes(Number(status))) {
-        // On 429, honor a valid Retry-After header (seconds or HTTP-date) when present;
-        // otherwise fall back to the fixed env-configured cooldown.
         const retryMs = Number(status) === 429 ? parseRetryAfterMs(retryAfterRaw) : null;
         const cooldownMs = retryMs != null ? retryMs : fallbackCooldownMs;
         account.cooldownUntil = Date.now() + cooldownMs;
@@ -425,7 +366,6 @@ function markAccountFailure(account, status, reason = '', retryAfterRaw = null, 
 function hasOtherReadyAccount(accountId, now = Date.now()) {
     return accounts.some(a => a.id !== accountId && a.config.token && a.config.cookie && a.cooldownUntil <= now);
 }
-// Errors after which the same request can be replayed on another account.
 function isAccountLevelError(error) {
     return [401, 403, 429].includes(Number(error?.status));
 }
@@ -455,12 +395,8 @@ function createSession() {
         accountId: null,
         history: [],
         lastActivityAt: Date.now(),
-        // Fingerprints of the client messages already present in the remote
-        // chat and of the system prompt/tools it was started with. They let a
-        // follow-up request send only its new messages (see planSessionTurn).
         sentMessageKeys: [],
         contextKey: null,
-        // Approximate size of everything the remote chat holds.
         remoteChars: 0,
         busy: false,
     };
@@ -479,8 +415,6 @@ function resetRemoteSession(session) {
     session.sentMessageKeys = [];
     session.contextKey = null;
     session.remoteChars = 0;
-    // Keep local recovery history and the sticky account assignment. A remote
-    // chat can be unhealthy without invalidating either of those local hints.
     return failed;
 }
 
@@ -503,8 +437,6 @@ function getOrCreateAgentSession(agentId) {
     return session;
 }
 
-// Evict idle sessions so the Map (keyed by client IP / user id) can't grow without
-// bound on a long-running process. Drops entries untouched for 2× the session TTL.
 function sweepIdleSessions(maxIdleMs = SESSION_TTL_MS * 2) {
     const now = Date.now();
     let removed = 0;
@@ -515,16 +447,7 @@ function sweepIdleSessions(maxIdleMs = SESSION_TTL_MS * 2) {
     return removed;
 }
 
-// solvePOW() lives in lib/pow (compiled-module cache + WASM-fetch timeout),
-// shared with client.js. Called as solvePOW(challenge, wasmUrl).
 
-// DeepSeek Web merged its “Быстрый” (Instant), “Эксперт” (Expert) and
-// “Распознавание” (Vision) modes into a single unified mode on 2026-09-10 and
-// retired V4 Pro on 2026-09-14 (#31). Every request now goes to the same
-// model_type; only the “DeepThink” (thinking_enabled) and “Search”
-// (search_enabled) toggles remain. The Android edition exposes only Flash and thinking variants. Legacy
-// aliases are unavailable. DEEPSEEK_MODEL_TYPE overrides the model_type
-// sent upstream; set it to an empty value to omit the field entirely.
 const DEEPSEEK_MODEL_TYPE = String(process.env.DEEPSEEK_MODEL_TYPE ?? 'default').trim();
 const UNIFIED_REAL_MODEL = 'DeepSeek-V4.1-Flash (DeepSeek Web unified mode)';
 
@@ -623,8 +546,6 @@ function resolveModelConfig(model) {
 function isKnownModel(model) { return Object.prototype.hasOwnProperty.call(MODEL_CONFIGS, String(model || '').toLowerCase()); }
 function isSupportedModel(model) { return resolveModelConfig(model).supported === true; }
 
-// A PoW answer is bound to one completion request, so every completion
-// (including the one after a session recreate) solves a fresh challenge.
 async function createPowHeader(account, signal, targetPath = COMPLETION_PATH) {
     const cr = await dsFetch(dsUrl('/api/v0/chat/create_pow_challenge'), {
         method: 'POST', headers: account.headers, signal,
@@ -660,8 +581,6 @@ function sleepWithSignal(ms, signal) {
     });
 }
 
-// Uploaded file ids per `account:imageHash`, shared across requests: a turn
-// that starts a new chat must not upload the same images again.
 const UPLOADED_FILE_TTL_MS = 30 * 60 * 1000;
 const UPLOADED_FILE_CACHE_MAX = 256;
 const uploadedFileCache = new Map();
@@ -677,8 +596,6 @@ function setCachedUpload(key, id) {
     while (uploadedFileCache.size > UPLOADED_FILE_CACHE_MAX) uploadedFileCache.delete(uploadedFileCache.keys().next().value);
 }
 
-// Status of one uploaded file in a fetch_files response. Read defensively:
-// the Web API has returned both lists and id-keyed maps.
 function extractUploadedFileStatus(json, fileId) {
     const biz = json?.data?.biz_data;
     const list = Array.isArray(biz?.files) ? biz.files
@@ -689,9 +606,6 @@ function extractUploadedFileStatus(json, fileId) {
     return { status: String(entry?.status || '').toUpperCase(), error: entry?.error_msg || entry?.error || null };
 }
 
-// DeepSeek can report throttling inside an HTTP 200 business-error envelope.
-// Read a message only when the numeric biz_code says the envelope is an error;
-// normal successful response content is never inspected for rate-limit text.
 function throwIfImageBusinessRateLimited(account, resp, json) {
     const bizCode = json?.data?.biz_code;
     if (!Number.isSafeInteger(bizCode) || bizCode === 0) return;
@@ -701,21 +615,18 @@ function throwIfImageBusinessRateLimited(account, resp, json) {
         bizData?.biz_msg, bizData?.biz_message, bizData?.message, bizData?.msg, bizData?.error_msg,
     ].find(value => typeof value === 'string' && value.length <= 2048);
     if (!message || !isRateLimitError(message)) return;
-    // Do not expose upstream envelope text in a proxy error or log.
     throwIfRateLimited(account, resp.status, `Too many messages (DeepSeek business code ${bizCode})`, resp.headers.get('retry-after'));
 }
 
 const FILE_READY_STATUS = /^(?:SUCCESS|PARSED|DONE|COMPLETED?|FINISHED|READY)$/;
 const FILE_FAILED_STATUS = /FAIL|ERROR|REJECT|UNSUPPORT|INVALID|EMPTY/;
 
-// Uploads one image with the account that owns the chat, then waits until
-// DeepSeek has processed it. Returns the file id for ref_file_ids.
 async function uploadImageToDeepSeek(account, image, signal, deadlineAt = Infinity) {
     const powB64 = await createPowHeader(account, signal, FILE_UPLOAD_PATH);
     const form = new FormData();
     form.append('file', new Blob([image.data], { type: image.mime }), image.filename);
     const headers = { ...account.headers, 'X-DS-PoW-Response': powB64, 'x-file-size': String(image.data.length) };
-    delete headers['Content-Type'];  // fetch sets the multipart boundary
+    delete headers['Content-Type'];
     const resp = await dsFetch(dsUrl(FILE_UPLOAD_PATH), { method: 'POST', headers, body: form, signal }, DS_FILE_TIMEOUT_MS);
     const { json, text } = await readDeepSeekJsonResponse(resp, 'file upload', account);
     if (!resp.ok) {
@@ -749,8 +660,6 @@ async function uploadImageToDeepSeek(account, image, signal, deadlineAt = Infini
     return fileId;
 }
 
-// Uploads the images of a request once per account (files belong to the
-// account that uploaded them).
 async function uploadImagesForAccount(account, images, signal, agentTag, deadlineAt = Infinity) {
     if (!images || images.length === 0) return [];
     const ids = [];
@@ -760,7 +669,6 @@ async function uploadImagesForAccount(account, images, signal, agentTag, deadlin
             const key = `${account.id}:${image.hash}`;
             let id = getCachedUpload(key);
             if (!id) {
-                // Uploads count against the request's overall deadline.
                 if (Date.now() > deadlineAt) throw timeoutError('Request deadline reached while uploading images');
                 id = await uploadImageToDeepSeek(account, image, signal, deadlineAt);
                 setCachedUpload(key, id);
@@ -820,17 +728,12 @@ async function postCompletion(session, account, modelCfg, promptText, signal, re
     });
 }
 
-// DeepSeek answers "too many messages" with HTTP 400 (not 429). Recreating the
-// chat would only burn another request: cool this account down briefly so the
-// caller can fail over or return 429. Auth failures keep their own handling.
 function throwIfRateLimited(account, status, errText, retryAfter) {
     if ([401, 403, 429].includes(Number(status)) || !isRateLimitError(errText)) return;
     markAccountFailure(account, 429, 'rate limited', retryAfter, RATE_LIMIT_COOLDOWN_MS);
     throw createUpstreamHttpError(429, errText, retryAfter || String(Math.ceil(RATE_LIMIT_COOLDOWN_MS / 1000)));
 }
 
-// attachments: { delta, full, deadlineAt } — images to reference in a reused
-// chat (delta) or a new chat (full), and when uploading must give up.
 async function askDeepSeekStream(prompt, agentId, model = 'deepseek-v4.1-flash', freshSessionPrompt = prompt, session = getOrCreateAgentSession(agentId), signal = null, attachments = null) {
     const modelCfg = resolveModelConfig(model);
     const hadRemoteSession = Boolean(session.id);
@@ -838,13 +741,8 @@ async function askDeepSeekStream(prompt, agentId, model = 'deepseek-v4.1-flash',
     account.lastUsedAt = Date.now();
     const agentTag = `[${agentId}/acct:${account.id}]`;
 
-    // Normally this rollover is performed before the prompt is built, so local
-    // recovery history can be injected. Keep this guard for direct callers and
-    // concurrent requests that may have advanced the same session meanwhile.
     const rollover = prepareSessionForPrompt(session);
     const accountRotationReset = hadRemoteSession && !session.id && !rollover;
-    // A brand-new remote chat has no memory of earlier turns, so it always
-    // receives the self-contained prompt.
     const startsFreshChat = !session.id;
     let effectivePrompt = startsFreshChat ? freshSessionPrompt : prompt;
     if (accountRotationReset) {
@@ -854,7 +752,6 @@ async function askDeepSeekStream(prompt, agentId, model = 'deepseek-v4.1-flash',
         console.log(`${agentTag} Session ${rollover.failedSessionId} reset before upstream call (${rollover.reason}).`);
     }
 
-    // Upload images first: a failed upload must not leave an empty chat.
     const images = attachments ? (startsFreshChat ? attachments.full : attachments.delta) : [];
     const refFileIds = await uploadImagesForAccount(account, images, signal, agentTag, attachments?.deadlineAt);
 
@@ -867,15 +764,12 @@ async function askDeepSeekStream(prompt, agentId, model = 'deepseek-v4.1-flash',
     const resp = await postCompletion(session, account, modelCfg, effectivePrompt, signal, refFileIds);
 
     if (resp.status !== 200) {
-        // Pass Retry-After so a 429 honors the server-requested cooldown (#16).
         const retryAfter = resp.headers.get('retry-after');
         markAccountFailure(account, resp.status, 'completion', retryAfter);
         const errText = await readUpstreamText(resp);
         throwIfAborted(signal);
         console.log(`${agentTag} Session error (${resp.status}): ${errText.substring(0, 100)}`);
         throwIfRateLimited(account, resp.status, errText, retryAfter);
-        // The remote chat may have expired or overflowed: start a new one with
-        // the full prompt once. Auth and rate-limit statuses are surfaced as is.
         if (resp.status === 400 || resp.status === 404 || resp.status === 500) {
             console.log(`${agentTag} Session ${session.id} expired. Creating new session...`);
             resetRemoteSession(session);
@@ -897,9 +791,6 @@ async function askDeepSeekStream(prompt, agentId, model = 'deepseek-v4.1-flash',
             session.remoteChars += effectivePrompt.length;
             return { resp: resp2, agentId, account, promptUsed: effectivePrompt, freshSessionReset: true };
         }
-        // The body was consumed for diagnostics, so returning this Response
-        // would hand a locked stream to readDeepSeekResponse. Surface a typed
-        // error instead and retain the real upstream status/Retry-After.
         throw createUpstreamHttpError(resp.status, errText, retryAfter);
     }
 
@@ -907,7 +798,6 @@ async function askDeepSeekStream(prompt, agentId, model = 'deepseek-v4.1-flash',
     return { resp, agentId, account, promptUsed: effectivePrompt, freshSessionReset: startsFreshChat };
 }
 
-// === Tool Calling Support ===
 
 const TOOL_SCHEMA_ANNOTATION_KEYS = new Set(['description', 'examples', '$comment', 'title']);
 const TOOL_SCHEMA_MAP_KEYS = new Set(['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas']);
@@ -922,11 +812,6 @@ function compactToolSchema(value) {
     if (!value || typeof value !== 'object') return value;
     const compact = {};
     for (const [key, child] of Object.entries(value)) {
-        // Descriptions/examples dominate large agent tool payloads but do not
-        // affect argument validation. Traverse only keywords whose values are
-        // themselves schemas. Literal instance values under const/enum/default
-        // must remain byte-for-byte equivalent, even when they contain fields
-        // named "description" or "title".
         if (TOOL_SCHEMA_ANNOTATION_KEYS.has(key)) continue;
         if (TOOL_SCHEMA_MAP_KEYS.has(key) && child && typeof child === 'object' && !Array.isArray(child)) {
             compact[key] = Object.fromEntries(Object.entries(child).map(([name, schema]) => [name, compactToolSchema(schema)]));
@@ -985,9 +870,6 @@ function formatToolDefinitions(tools) {
     return text;
 }
 
-// Appended to follow-up turns of a long-lived remote chat. The full tool
-// manual sits at the start of that chat; without a short refresher DeepSeek
-// gradually drifts off the protocol and answers with code blocks (#30).
 function formatToolReminder(tools) {
     const names = (tools || [])
         .filter(tool => tool?.type === 'function' && tool.function?.name)
@@ -1026,9 +908,6 @@ function extractBalancedJsonAt(text, startIndex) {
     return null;
 }
 
-// Top-level balanced objects in one linear pass. `accept` filters which
-// objects count towards maxObjects, so a long answer full of code braces
-// cannot exhaust the budget before the real candidate.
 function extractBalancedJsonObjects(text, maxObjects = MAX_TOOL_JSON_CANDIDATES, accept = null) {
     const objects = [];
     let start = -1;
@@ -1070,12 +949,6 @@ const VALID_JSON_ESCAPE = /^(?:["\\/bfnrt]|u[0-9a-fA-F]{4})/;
 const TOOL_ENVELOPE_KEY_RE = /["'](?:tool_call|tool_calls|function_call)["']\s*:/;
 
 function repairJsonStringBody(body) {
-    // Raw text such as a Windows path: then single backslashes in this string
-    // are literal, so "C:\new\tmp" keeps them instead of becoming a newline +
-    // tab. The unambiguous escapes \\, \" and \uXXXX keep their JSON meaning.
-    // Signs of raw text: an invalid escape (\g, \d, \U ...), a \b or \f
-    // escape (backspace/form feed never appear in tool arguments), or a value
-    // that starts like a drive path (C:\...).
     let rawBackslashes = /^[A-Za-z]:\\(?!\\)/.test(body);
     for (let k = 0; !rawBackslashes && k < body.length; k++) {
         if (body[k] !== '\\') continue;
@@ -1105,9 +978,6 @@ function repairJsonStringBody(body) {
     return result;
 }
 
-// Repairs the two mistakes DeepSeek makes in otherwise well-formed tool JSON:
-// unescaped backslashes (Windows paths, #30) and raw newlines/tabs inside
-// string values (multi-line code). Structure outside strings is never changed.
 function repairJsonText(raw) {
     const text = String(raw || '');
     let out = '';
@@ -1127,8 +997,6 @@ function repairJsonText(raw) {
     return changed ? out : text;
 }
 
-// Even syntactically valid JSON is repaired when a string is clearly a raw
-// Windows path ("C:\files\bin" parses, but into a form feed and a backspace).
 function parseJsonLenient(raw) {
     let parsed;
     let error = null;
@@ -1136,7 +1004,7 @@ function parseJsonLenient(raw) {
     const repaired = repairJsonText(raw);
     if (repaired !== raw) {
         try { return JSON.parse(repaired); }
-        catch (e) { /* fall back to the strict result or error */ }
+        catch (e) {   }
     }
     if (error) throw error;
     return parsed;
@@ -1191,8 +1059,6 @@ function parseJsonToolCandidate(raw, label = 'json', options = {}) {
             return tc;
         }
     } catch (e) {
-        // Answers with source code are full of braces. Only report candidates
-        // that were meant to be tool calls, not every C#/JS block (#30).
         if (options.allowBare || TOOL_ENVELOPE_KEY_RE.test(raw)) {
             console.log(`[parseToolCall] ${label} JSON.parse failed: ${e.message.substring(0, 100)}`);
         }
@@ -1393,8 +1259,6 @@ function extractToolCallScope(normalized) {
         if (tags.some(tag => tag.name !== 'tool_calls' && (tag.start < opening.end || tag.start >= closing.start))) return null;
         return normalized.substring(opening.end, closing.start);
     }
-    // Narrow repair: tolerate a missing opening wrapper only when a closing
-    // wrapper exists. A bare invoke without this sentinel is never executable.
     if (closings.length > 0) {
         const closing = closings[closings.length - 1];
         const invokeOpenings = tags.filter(tag => tag.name === 'invoke' && !tag.closing && tag.start < closing.start);
@@ -1441,13 +1305,10 @@ function parseDsmlToolCall(text) {
 }
 
 function looksLikeToolCallMarkup(rawText) {
-    // Examples inside foreign code fences are documentation, not broken calls.
     const text = stripForeignCodeFences(rawText);
     return /TOOL_CALL:\s*[\w-]+|<\s*tool_call\b|[|｜]+\s*DSML\s*[|｜]+|[<＜]\s*\/?\s*(?:DSML)?(?:[\w.-]+:)?(?:tool[\s_-]*calls|function[\s_-]*calls|invoke)\b|["'](?:tool_call|tool_calls|function_call)["']\s*:/i.test(String(text || ''));
 }
 
-// A fence closes with the same number of backticks it opened with, so a
-// ````markdown block can quote a ```json example without exposing it.
 const CODE_FENCE_RE = /(`{3,})([\w+.-]*)[^\S\r\n]*\r?\n?([\s\S]*?)\1(?!`)/;
 
 function isJsonFenceLanguage(language) {
@@ -1465,9 +1326,6 @@ function parseToolCall(text) {
         return null;
     }
 
-    // Code blocks in another language (```csharp, ```javascript, ```xml ...)
-    // are source code. Tool-call examples inside them must never execute, so
-    // all searches except the JSON-fence one run on the text without them.
     const scanText = stripForeignCodeFences(text);
 
     if (/[|｜]+\s*DSML\s*[|｜]+|[<＜]\s*\/?\s*(?:DSML)?(?:[\w.-]+:)?(?:tool[\s_-]*calls|function[\s_-]*calls|invoke)\b/i.test(scanText)) {
@@ -1477,13 +1335,11 @@ function parseToolCall(text) {
         return null;
     }
 
-    // XML-ish wrappers used by some agent prompts.
     const xmlMatch = scanText.match(/<tool_call[^>]*>([\s\S]*?)<\/tool_call>/i);
     if (xmlMatch) {
         const inner = xmlMatch[1].trim();
         let tc = parseJsonToolCandidate(inner, 'xml', { allowBare: true });
         if (!tc) {
-            // Tolerate stray text around the JSON inside the wrapper.
             const objectStart = inner.indexOf('{');
             const object = objectStart === -1 ? null : extractBalancedJsonAt(inner, objectStart);
             if (object && object !== inner) tc = parseJsonToolCandidate(object, 'xml-object', { allowBare: true });
@@ -1491,7 +1347,6 @@ function parseToolCall(text) {
         if (tc) return tc;
     }
 
-    // Fenced JSON blocks (untagged or tagged json).
     const fenceRe = new RegExp(CODE_FENCE_RE.source, 'g');
     let fence;
     while ((fence = fenceRe.exec(text)) !== null) {
@@ -1502,7 +1357,6 @@ function parseToolCall(text) {
         if (tc) return tc;
     }
 
-    // Legacy TOOL_CALL: name + first balanced JSON object after it.
     const match = scanText.match(/TOOL_CALL:\s*([\w-]+)\s*/i);
     if (match) {
         const name = match[1];
@@ -1529,9 +1383,6 @@ function parseToolCall(text) {
         }
     }
 
-    // Scan each top-level balanced object once (linear time). Only explicit
-    // top-level tool-call envelopes are executable; bare {name, arguments}
-    // examples and envelopes nested inside other JSON are not.
     for (const rawJson of extractBalancedJsonObjects(scanText, MAX_TOOL_JSON_CANDIDATES, object => TOOL_ENVELOPE_KEY_RE.test(object))) {
         const tc = parseJsonToolCandidate(rawJson, 'inline');
         if (tc) return tc;
@@ -1541,13 +1392,10 @@ function parseToolCall(text) {
     return null;
 }
 
-/**
- * Strip surrogate characters and other problematic Unicode from text
- * to prevent httpx/urlencode crashes when the gateway sends to Telegram.
- */
+
+
+
 function sanitizeContent(text) {
-    // Only lone (unpaired) surrogates are invalid. Valid pairs are emoji and
-    // other astral characters and must survive.
     return String(text || '').replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '');
 }
 
@@ -1581,8 +1429,6 @@ function buildToolCallResponse(toolCall, model = 'deepseek-v4.1-flash', prompt =
             function: { name: toolCall.name, arguments: toolCall.arguments }
         }]
     };
-    // Do not attach reasoning to tool-call turns. Some agent clients treat any
-    // reasoning/text payload as a final assistant answer and stop their tool loop.
     return {
         id: 'ds-' + Date.now(),
         object: 'chat.completion',
@@ -1608,17 +1454,12 @@ function buildTextResponse(content, prompt, model = 'deepseek-v4.1-flash', reaso
         choices: [{
             index: 0,
             message,
-            // Surface truncation: a 'length' finish lets length-aware clients re-request
-            // instead of silently treating a cut-off answer as a clean stop.
             finish_reason: finishReason === 'length' ? 'length' : 'stop'
         }],
         usage: buildUsage(prompt, content, reasoningContent),
     };
 }
 
-// Images and files are not uploaded to DeepSeek. Keep a short marker so the
-// model knows something was attached, but never inline base64 payloads: one
-// screenshot would otherwise blow the prompt budget.
 function describeAttachment(kind, reference) {
     const value = typeof reference === 'string' ? reference.trim() : '';
     if (!value || value.startsWith('data:') || value.length > 512 || !/^(?:https?:\/\/|[\w.-]+$)/i.test(value)) {
@@ -1629,9 +1470,6 @@ function describeAttachment(kind, reference) {
 
 const decodedImageCache = new WeakMap();
 
-// Inline image of a content part (OpenAI image_url / Responses input_image
-// data URLs, Anthropic base64 sources) as { mime, data, hash, filename }, or
-// null for remote URLs and anything that is not a usable image.
 function decodeImagePart(part) {
     if (!part || typeof part !== 'object') return null;
     if (decodedImageCache.has(part)) return decodedImageCache.get(part);
@@ -1649,8 +1487,6 @@ function decodeImagePart(part) {
         }
     }
     let image = null;
-    // Formats DeepSeek's image understanding accepts; anything else (SVG, ...)
-    // stays a text marker instead of failing the whole request.
     if (/^image\/(?:png|jpe?g|webp|gif)$/i.test(mime) && base64) {
         const data = Buffer.from(base64.replace(/\s+/g, ''), 'base64');
         if (data.length > 0 && data.length <= MAX_IMAGE_BYTES) {
@@ -1670,17 +1506,12 @@ function hasInlineImageData(part) {
 }
 
 function describeImagePart(part) {
-    // Without upload there is nothing to decode: inline data becomes a marker.
     if (!IMAGE_UPLOAD_ENABLED && hasInlineImageData(part)) return '[Image attached; not visible through this proxy]';
     const image = decodeImagePart(part);
-    // The marker depends only on the image itself, so message fingerprints
-    // stay stable across turns.
     if (image) return IMAGE_UPLOAD_ENABLED ? `[Image ${image.hash} attached]` : '[Image attached; not visible through this proxy]';
     return describeAttachment('Image', part.image_url?.url ?? part.image_url ?? part.url ?? part.source?.url ?? part.source?.data);
 }
 
-// Inline images of the given messages in order (including images inside
-// Anthropic tool results), de-duplicated, keeping the most recent `limit`.
 function collectImages(messages, limit = MAX_IMAGES_PER_REQUEST) {
     const images = [];
     const seen = new Set();
@@ -1691,7 +1522,6 @@ function collectImages(messages, limit = MAX_IMAGES_PER_REQUEST) {
             if (part.type === 'tool_result') { visit(part.content); continue; }
             const image = decodeImagePart(part);
             if (!image) continue;
-            // A repeated image counts at its newest position.
             if (seen.has(image.hash)) images.splice(images.findIndex(item => item.hash === image.hash), 1);
             seen.add(image.hash);
             images.push(image);
@@ -1712,8 +1542,6 @@ function normalizeMessageContent(content) {
             if (!part || typeof part !== 'object') return '';
             if (part.type === 'text' || part.type === 'input_text' || part.type === 'output_text') return part.text || '';
             if (part.type === 'tool_result') return `[Tool Result ${part.tool_use_id || ''}]\n${normalizeMessageContent(part.content)}`;
-            // Earlier reasoning blocks (Anthropic thinking, Responses reasoning)
-            // carry signatures/encrypted payloads, not conversation text.
             if (part.type === 'thinking' || part.type === 'redacted_thinking' || part.type === 'reasoning') return '';
             if (part.type === 'image_url' || part.type === 'input_image' || part.type === 'image') {
                 return describeImagePart(part);
@@ -1756,14 +1584,11 @@ function normalizeResponsesInput(input) {
     const messages = [];
     for (const item of input) {
         if (!item || typeof item !== 'object') continue;
-        // Content parts stay raw (images included); formatting normalizes them.
         if (item.type === 'message') {
             messages.push({ role: item.role || 'user', content: item.content });
         } else if (item.role) {
             messages.push({ role: item.role, content: item.content });
         } else if (item.type === 'function_call') {
-            // The assistant's earlier tool request. Without it the following
-            // function_call_output has no visible cause in the prompt.
             messages.push({ role: 'assistant', content: null, tool_calls: [{
                 id: item.call_id || item.id,
                 type: 'function',
@@ -1861,9 +1686,6 @@ function toAnthropicResponse(openaiResp) {
     return response;
 }
 
-// Splits text into stream deltas by code point. Cutting by UTF-16 units would
-// split an emoji into lone surrogates, which strict UTF-8 clients (Python
-// httpx, Telegram gateways) reject.
 function chunkText(text, size) {
     return String(text || '').match(new RegExp(`[\\s\\S]{1,${size}}`, 'gu')) || [];
 }
@@ -1934,17 +1756,6 @@ function anthropicErrorType(type, status) {
     return 'api_error';
 }
 
-// Writes one streamed completion in the client's protocol (OpenAI chat
-// chunks, Anthropic message events or Responses events).
-//
-// Live use: source('reasoning' | 'content') returns a function that takes the
-// cumulative text of one DeepSeek call and forwards only the new part, so
-// clients see the answer while DeepSeek is still writing it. finish() then
-// emits whatever was not streamed yet (or the whole answer when nothing was)
-// and closes the stream; fail() reports an error, as an HTTP status while no
-// byte was sent and as an in-stream error event afterwards. Headers are sent
-// lazily, on the first delta or keepAlive(), so fast failures keep their
-// real status codes.
 function createStreamWriter(res, apiMode, { model = 'deepseek-v4.1-flash', promptTokens = 0, id = 'ds-' + Date.now(), created = Math.floor(Date.now() / 1000) } = {}) {
     const state = { started: false, ended: false, lastWriteAt: 0, reasoning: '', content: '', section: null, reasoningSource: null, pendingWhitespace: '', sources: 0 };
     const itemIds = { response: id.replace(/^ds-/, 'resp_'), reasoning: `rs_${id}`, message: `msg_${id}` };
@@ -1969,7 +1780,6 @@ function createStreamWriter(res, apiMode, { model = 'deepseek-v4.1-flash', promp
         }
     }
 
-    // The first OpenAI chunk announces the role, as OpenAI streams do.
     function openaiRole(toolTurn) {
         if (roleSent) return;
         roleSent = true;
@@ -2035,8 +1845,6 @@ function createStreamWriter(res, apiMode, { model = 'deepseek-v4.1-flash', promp
     }
 
     function pushReasoning(text, sourceId = null) {
-        // Reasoning belongs before the answer and comes from one DeepSeek
-        // call; reasoning of retries and continuations is not streamed.
         if (state.ended || state.content || state.section === 'content') return;
         if (sourceId !== null) {
             if (state.reasoningSource !== null && state.reasoningSource !== sourceId) return;
@@ -2047,8 +1855,6 @@ function createStreamWriter(res, apiMode, { model = 'deepseek-v4.1-flash', promp
 
     function pushContent(text) {
         if (state.ended) return;
-        // Do not open the answer on leading whitespace: an all-whitespace
-        // answer counts as empty and is retried.
         if (!state.content) {
             const combined = state.pendingWhitespace + text;
             if (!combined.trim()) { state.pendingWhitespace = combined; return; }
@@ -2064,8 +1870,6 @@ function createStreamWriter(res, apiMode, { model = 'deepseek-v4.1-flash', promp
         get streamedContent() { return state.content; },
         source(kind) {
             const sourceId = ++state.sources;
-            // Whitespace held back from an earlier (empty, retried) call
-            // must not be prepended to this call's answer.
             if (kind === 'content' && !state.content) state.pendingWhitespace = '';
             let consumed = 0;
             let carry = '';
@@ -2075,7 +1879,6 @@ function createStreamWriter(res, apiMode, { model = 'deepseek-v4.1-flash', promp
                 let piece = carry + raw.slice(consumed);
                 consumed = raw.length;
                 carry = '';
-                // Keep a trailing high surrogate until its pair arrives.
                 if (/[\ud800-\udbff]$/.test(piece)) { carry = piece.slice(-1); piece = piece.slice(0, -1); }
                 piece = sanitizeContent(piece);
                 if (kind === 'reasoning') pushReasoning(piece, sourceId);
@@ -2096,13 +1899,9 @@ function createStreamWriter(res, apiMode, { model = 'deepseek-v4.1-flash', promp
             const usage = { input_tokens: openaiResp.usage?.prompt_tokens || 0, output_tokens: openaiResp.usage?.completion_tokens || 0 };
             start();
             if (toolCalls) {
-                // Agent clients expect a tool turn to contain only the tool
-                // call: no reasoning or text that could read as a final answer.
                 closeSection();
                 if (apiMode === 'openai') {
                     openaiRole(true);
-                    // Streaming tool-call deltas must carry their position:
-                    // SDKs accumulate arguments by `index`.
                     chunk({ tool_calls: toolCalls.map((tc, index) => ({ index, ...tc })) });
                     chunk({}, 'tool_calls');
                 } else if (apiMode === 'anthropic') {
@@ -2151,7 +1950,6 @@ function createStreamWriter(res, apiMode, { model = 'deepseek-v4.1-flash', promp
             if (apiMode === 'anthropic') {
                 sse('message_stop', { type: 'message_stop' });
             } else if (apiMode === 'responses') {
-                // Describe exactly the items that were streamed.
                 const streamed = toolCalls ? openaiResp : {
                     ...openaiResp,
                     choices: [{ ...choice, message: { ...msg, reasoning_content: state.reasoning || undefined, content: state.content } }],
@@ -2199,10 +1997,7 @@ function storeHistory(session, prompt, content, toolCall) {
     const assistantResponse = toolCall
         ? toolCallAsPromptText({ function: toolCall })
         : content;
-    // Save last 500 chars of the prompt for history context
     const shortPrompt = prompt.length > 500 ? '...' + prompt.substring(prompt.length - 500) : prompt;
-    // One huge answer must not crowd every earlier turn out of the bounded
-    // recovery history (or get the whole history dropped as too long).
     const shortAnswer = truncatePromptMiddle(assistantResponse, MAX_HISTORY_ENTRY_CHARS, 0.6);
     session.history.push({ user: shortPrompt, assistant: shortAnswer });
     while (session.history.length > MAX_HISTORY_LENGTH) session.history.shift();
@@ -2213,11 +2008,6 @@ function storeHistory(session, prompt, content, toolCall) {
     }
 }
 
-// Extract MEDIA: paths for screenshots produced during the current turn, so a
-// Hermes/Telegram gateway delivers the file. Only messages since the latest
-// user message are scanned; older screenshots were delivered with earlier
-// answers. Paths are attached only if the file actually exists (DeepSeek
-// hallucinates paths).
 function extractScreenshotPaths(messages) {
     const paths = [];
     const list = Array.isArray(messages) ? messages : [];
@@ -2230,14 +2020,13 @@ function extractScreenshotPaths(messages) {
         if (paths.includes(tag)) return;
         try {
             if (fs.statSync(filePath).isFile()) paths.push(tag);
-        } catch (e) { /* missing or unreadable: skip */ }
+        } catch (e) {   }
     };
     for (const msg of list.slice(start)) {
         if (!msg) continue;
         const content = normalizeMessageContent(msg.content);
         if (!content) continue;
         if (msg.role === 'tool') {
-            // screenshot_path/path fields come directly from browser_vision.
             const pngMatch = content.match(/["'](screenshot_path|path)["']\s*:\s*["']([^"']+\.(?:png|jpg|jpeg|webp|gif))["']/i);
             if (pngMatch && pngMatch[2].startsWith('/')) addPath(pngMatch[2]);
             for (const tag of content.match(/MEDIA:(\S+)/g) || []) addPath(tag.replace(/^MEDIA:/, ''));
@@ -2264,9 +2053,6 @@ function truncatePromptMiddle(text, maxChars, headRatio = 0.35) {
     return value.substring(0, headChars) + PROMPT_COMPACTION_MARKER + value.substring(value.length - tailChars);
 }
 
-// A client sends its own history when it replays earlier assistant turns.
-// Requests with only new input (one user message, or just a tool result for
-// a previous answer) rely on the proxy's remote chat and local history.
 function hasExplicitConversationHistory(messages) {
     return (messages || []).some(msg => msg && msg.role === 'assistant');
 }
@@ -2290,15 +2076,12 @@ function buildBoundedPrompt(systemPrompt, historyPrefix, conversationPrompt, max
         return { prompt: original, compacted: false, historyDropped: false, originalChars: original.length, promptChars: original.length };
     }
 
-    // Server-side history is only a recovery hint. Drop it before truncating
-    // client-provided messages, which may already contain the same turns.
     const historyDropped = history.length > 0;
     const currentConversation = conversation;
     const separatorLength = system && currentConversation ? 2 : 0;
     let systemBudget = system ? Math.floor((safeMax - separatorLength) * 0.5) : 0;
     let conversationBudget = Math.max(0, safeMax - separatorLength - systemBudget);
 
-    // Give unused capacity from a short side to the other side.
     if (system.length < systemBudget) {
         systemBudget = system.length;
         conversationBudget = Math.max(0, safeMax - separatorLength - systemBudget);
@@ -2307,8 +2090,6 @@ function buildBoundedPrompt(systemPrompt, historyPrefix, conversationPrompt, max
         systemBudget = Math.max(0, safeMax - separatorLength - conversationBudget);
     }
 
-    // Preserve the start of the task/system instructions and the most recent
-    // tool loop. The injected tool adapter lives at the end of systemPrompt.
     const boundedSystem = truncatePromptMiddle(system, systemBudget, 0.35);
     const boundedConversation = truncatePromptMiddle(currentConversation, conversationBudget, 0.25);
     let bounded = boundedSystem && boundedConversation
@@ -2387,17 +2168,14 @@ function isTimeoutError(error) {
 }
 
 function isSystemRole(role) {
-    // OpenAI's newer "developer" role carries system instructions.
     return role === 'system' || role === 'developer';
 }
 
-// Earlier tool requests are replayed in the same JSON envelope the model is
-// asked to produce, so the transcript never teaches it a second format.
 function toolCallAsPromptText(toolCall) {
     const name = toolCall?.function?.name || toolCall?.name || '';
     let args = toolCall?.function?.arguments ?? toolCall?.arguments ?? {};
     if (typeof args === 'string') {
-        try { args = JSON.parse(args || '{}'); } catch (e) { /* keep the raw string */ }
+        try { args = JSON.parse(args || '{}'); } catch (e) {   }
     }
     return JSON.stringify({ tool_call: { name, arguments: args } });
 }
@@ -2427,9 +2205,6 @@ function formatConversation(messages, toolNames = buildToolNameIndex(messages)) 
                 conversation += `<assistant_message>\n${toolCallAsPromptText(tc)}\n</assistant_message>\n\n`;
             }
         } else if (msg.role === 'tool' || msg.role === 'function') {
-            // Tool execution result. Do not impose a per-result limit: one
-            // large result may be the essential input. buildBoundedPrompt
-            // applies the single global cap while preserving the latest tail.
             const name = msg.name || toolNames.get(msg.tool_call_id) || '';
             conversation += `[Tool Result${name ? `: ${name}` : ''}]\n${normalizeMessageContent(msg.content)}\n\n`;
         }
@@ -2437,7 +2212,6 @@ function formatConversation(messages, toolNames = buildToolNameIndex(messages)) 
     return conversation.trim();
 }
 
-// Match protocol signals or a whole known replacement, never arbitrary refusal prose.
 function isReplacementStub(result) {
     const signal=[result?.finishReason,result?.modelError?.finish_reason,result?.responseStatus].filter(Boolean).join(' ');
     if(/(?:content[_ -]filter(?:ed)?|content[_ -]blocked|censored)/i.test(signal))return true;
@@ -2475,8 +2249,6 @@ function hashText(value) {
     return crypto.createHash('sha256').update(String(value)).digest('base64');
 }
 
-// Identity of one client message as it is replayed in later requests. The
-// assistant's reasoning is excluded: clients often drop it when echoing.
 function conversationMessageKey(msg) {
     const toolCalls = Array.isArray(msg?.tool_calls)
         ? msg.tool_calls.map(tc => [tc?.function?.name || '', String(tc?.function?.arguments ?? ''), tc?.id || ''])
@@ -2489,13 +2261,6 @@ function conversationMessageKey(msg) {
     ]));
 }
 
-// Decides what a request must send to DeepSeek.
-//  - 'delta': the remote chat already holds the earlier turns of this
-//    conversation, so only the new messages go up (plus a tool reminder).
-//  - 'full':  a fresh remote chat receives the complete (bounded) prompt.
-// Re-sending the whole history into an existing chat made the remote context
-// grow quadratically until DeepSeek returned empty answers or "content too
-// long" and lost the tool protocol (#23, #30).
 const SEND_FULL_HISTORY = isTruthy(process.env.DEEPSEEK_SEND_FULL_HISTORY);
 const NEW_CHAT_EACH_MESSAGE = SEND_FULL_HISTORY && isTruthy(process.env.DEEPSEEK_NEW_CHAT_EACH_MESSAGE);
 
@@ -2506,20 +2271,14 @@ function planSessionTurn(session, messages, contextKey, policy = {}) {
     const newChat=fullHistory && (policy.newChatEachMessage ?? NEW_CHAT_EACH_MESSAGE);
     if (newChat || policy.regenerate) return {mode:'full',reason:policy.regenerate?'regenerate response':'new chat for each message',keys};
     if (!session?.id) return { mode: 'full', reason: null, keys };
-    // contextKey is recorded after the first successful turn. Without it the
-    // remote chat is empty (its first request failed), so it must receive the
-    // self-contained prompt, including local recovery history.
     if (!session.contextKey) return { mode: 'full', reason: 'remote chat has no completed turn yet', keys };
     const sent = Array.isArray(session.sentMessageKeys) ? session.sentMessageKeys : [];
-    // A lone user message cannot prove continuity, even with the same user/IP.
     if (!conversation.some(msg => msg.role === 'assistant'))
         return {mode:'full',reason:'new conversation without prior assistant turns',keys};
     if (session.contextKey !== contextKey) return { mode: 'full', reason: 'system prompt or tools changed', keys };
     if (sent.length > 0 && sent.length < keys.length && sent.every((key, index) => keys[index] === key)) {
         if(session.answerKey && conversation[sent.length]?.role==='assistant' && conversationMessageKey(conversation[sent.length])!==session.answerKey)
             return {mode:'full',reason:'assistant branch changed',keys};
-        // The client echoes the assistant turn DeepSeek just produced; the
-        // remote chat already contains it.
         let start = sent.length;
         while (start < conversation.length && conversation[start].role === 'assistant') start++;
         const delta = conversation.slice(start);
@@ -2544,7 +2303,6 @@ function buildDeltaPrompt(deltaMessages, allMessages, toolReminder, maxChars = M
     return { prompt: bounded + suffix, compacted: bounded.length < body.length };
 }
 
-// === HTTP Server ===
 const server = http.createServer(async (req, res) => {
     const requestOrigin = req.headers.origin;
     res.setHeader('Vary', 'Origin');
@@ -2568,7 +2326,6 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // Health check
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
         const includePrivateStatus = !PROXY_API_KEY || isProxyAuthorized(req.headers.authorization, PROXY_API_KEY, req.headers['x-api-key']);
         const health = { status: 'ok', service: 'DeepSeek Pocket', };
@@ -2587,8 +2344,6 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // Readiness probe (distinct from the liveness check above): 503 unless at least
-    // one account can serve right now, so an aggregator/LB won't route to a cold pool.
     if (req.method === 'GET' && url.pathname === '/readyz') {
         const now = Date.now();
         const ready = accounts.filter(a => a.config.token && a.config.cookie && a.cooldownUntil <= now).length;
@@ -2597,21 +2352,18 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // Models: OpenAI-compatible list exposes only aliases verified to work through this proxy.
     if (req.method === 'GET' && url.pathname === '/v1/models') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ object: 'list', data: SUPPORTED_MODEL_IDS.map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'deepseek-web', real_model: MODEL_CONFIGS[id].real_model, capabilities: MODEL_CONFIGS[id].capabilities })) }));
         return;
     }
 
-    // Full mapping, including Web models observed but not currently usable through the direct API.
     if (req.method === 'GET' && (url.pathname === '/v1/model-capabilities' || url.pathname === '/api/model-capabilities')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ object: 'model_capabilities', data: ALL_MODEL_CAPABILITIES }));
         return;
     }
 
-    // Sessions status
     if (req.method === 'GET' && url.pathname === '/v1/sessions') {
         const agentList = [];
         for (const [agentId, session] of sessions) {
@@ -2632,7 +2384,6 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // Reset session for a specific agent (or all if no agent specified)
     if (req.method === 'POST' && url.pathname === '/reset-session') {
         const agentId = url.searchParams.get('agent') || 'default';
         if (agentId === 'all') {
@@ -2664,16 +2415,13 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(404); res.end('Not found'); return;
     }
 
-    // Backpressure: reject rather than fan out unbounded concurrent upstream work.
     if (inFlight >= MAX_CONCURRENT) {
         res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': '2' });
         res.end(JSON.stringify({ error: { message: `Server busy (${inFlight}/${MAX_CONCURRENT} requests in flight). Retry shortly.`, type: 'overloaded' } }));
         return;
     }
 
-    const MAX_BODY_BYTES = Infinity;  // chat payloads are small; cap memory before JSON.parse
-    // Collect raw bytes and decode once: decoding chunk by chunk corrupts any
-    // multi-byte character (Cyrillic, CJK, emoji) split across TCP chunks.
+    const MAX_BODY_BYTES = Infinity;
     const bodyChunks = [];
     let bodyBytes = 0;
     let bodyTooLarge = false;
@@ -2693,11 +2441,7 @@ const server = http.createServer(async (req, res) => {
         const body = Buffer.concat(bodyChunks).toString('utf8');
         inFlight++;
         let clientGone = false;
-        // Cancels every upstream call of this request (PoW, chat creation,
-        // the answer stream) once nobody is waiting for the result.
         const requestAbort = new AbortController();
-        // Every upstream call of this request listens to this signal; retries
-        // can exceed the default EventTarget listener warning threshold.
         events.setMaxListeners(0, requestAbort.signal);
         res.on('close', () => {
             if (res.writableFinished) return;
@@ -2711,16 +2455,12 @@ const server = http.createServer(async (req, res) => {
         let lockedSession = null;
         let live = null;
         let keepAliveTimer = null;
-        // Error response in the client's protocol: a JSON error while nothing
-        // was streamed, an in-stream error event once the stream has started.
         const respondError = (status, error, headers = {}) => {
             if (live) { live.fail(status, error, headers); return; }
             if (res.headersSent) { if (!res.writableEnded) res.end(); return; }
             res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
             res.end(JSON.stringify({ error }));
         };
-        // Set once DeepSeek accepted a completion in this request; only then
-        // can the remote chat contain turns the client does not know about.
         let remoteTouched = false;
         try {
             let rawParams;
@@ -2755,8 +2495,6 @@ const server = http.createServer(async (req, res) => {
                 res.end(JSON.stringify({ error: { message: `${requestedModel} is not currently supported through this DeepSeek Web API path`, type: 'unsupported_model', model: requestedModel, real_model: cfg.real_model, reason: cfg.unavailable_reason, capabilities: cfg.capabilities, supported_models: SUPPORTED_MODEL_IDS } }));
                 return;
             }
-            // Never use an IP address as a chat identity. Websites and local apps
-            // often share it. The first turn and system define an automatic chain.
             const requestedSession = req.headers['x-agent-session'] || params.session || params.user;
             const rootMessage=messages.find(m=>m.role==='user');
             const rootContext=messages.filter(m=>isSystemRole(m.role)).map(m=>normalizeMessageContent(m.content)).join('\n');
@@ -2765,8 +2503,6 @@ const server = http.createServer(async (req, res) => {
             activeAgentId = agentId;
             console.log(`[DS-API] Request accepted (${apiMode}, ${requestedModel})`);
 
-            // "/new" command: if the latest user message is exactly "/new" (whitespace-insensitive),
-            // reset this agent's DeepSeek session/history instead of forwarding anything to DeepSeek.
             const lastUserMessage = [...messages].reverse().find(m => m.role === 'user');
             const lastUserText = lastUserMessage ? normalizeMessageContent(lastUserMessage.content).trim() : '';
             if (lastUserText === '/new') {
@@ -2780,17 +2516,11 @@ const server = http.createServer(async (req, res) => {
             }
 
             const { prompt, systemPrompt, toolReminder } = formatMessages(messages, tools, params);
-            // For usage accounting, count the CLIENT's original input — not the
-            // proxy-expanded fullPrompt (system + injected tools + history) — so
-            // prompt_tokens reflects what the caller actually sent.
             const clientPromptText = messages.map(m => normalizeMessageContent(m.content)).join('\n');
             const allowedToolNames = new Set(tools
                 .filter(tool => tool?.type === 'function' && tool.function?.name)
                 .map(tool => tool.function.name));
 
-            // stream=true: plain answers go to the client while DeepSeek is
-            // still writing them. With tools the answer may turn out to be a
-            // tool call, so it is buffered and only keep-alives are sent.
             if (stream) {
                 live = createStreamWriter(res, apiMode, { model: requestedModel, promptTokens: estimateTokens(clientPromptText) });
                 keepAliveTimer = setInterval(() => {
@@ -2798,15 +2528,8 @@ const server = http.createServer(async (req, res) => {
                 }, 1000);
                 keepAliveTimer.unref();
             }
-            // Hold text until the final moderation state is known. Keep-alives
-            // still flow; finish() emits only the checked result in SSE format.
             const liveProgress = () => null;
 
-            // One DeepSeek chat generates one answer at a time, and a second
-            // turn sent meanwhile would land on the wrong parent message. The
-            // first request owns the agent's chat; overlapping requests (e.g.
-            // Hermes background reviews from the same host) run in a private,
-            // throwaway chat instead of corrupting it (#23).
             const agentSession = getOrCreateAgentSession(agentId);
             const ephemeral = agentSession.busy === true;
             const session = ephemeral ? createSession() : agentSession;
@@ -2818,16 +2541,11 @@ const server = http.createServer(async (req, res) => {
             }
             activeSession = session;
 
-            // Roll over TTL/depth/size-limited sessions before deciding what to
-            // send, so a replacement chat receives the complete prompt.
             const promptRollover = prepareSessionForPrompt(session);
             if (promptRollover) {
                 console.log(`${agentTag} Session ${promptRollover.failedSessionId} reset before prompt build (${promptRollover.reason}); recovery history preserved.`);
             }
 
-            // Clients that send only their latest message rely on local
-            // recovery history whenever a new remote chat has to be started.
-            // Client-provided history is authoritative; never inject hidden old turns.
             const recoveryHistoryPrefix = '';
             const freshPromptBuild = buildBoundedPrompt(systemPrompt, recoveryHistoryPrefix, prompt);
             const contextKey = hashText(systemPrompt);
@@ -2853,8 +2571,6 @@ const server = http.createServer(async (req, res) => {
             }
             if (promptCompacted) markContextCompacted(res);
 
-            // Images: the new messages' images go into a reused chat, the
-            // conversation's most recent images into a new chat.
             const attachments = IMAGE_UPLOAD_ENABLED ? {
                 delta: plan.mode === 'delta' ? collectImages(plan.messages) : plan.keepRemote ? collectImages(messages) : [],
                 full: collectImages(messages),
@@ -2862,9 +2578,6 @@ const server = http.createServer(async (req, res) => {
             } : null;
 
             let lastAccount = null;
-            // Calls DeepSeek, replaying the request on another account when the
-            // current one is rejected (401/403) or throttled (429). A replay
-            // always starts a fresh chat, so it gets the self-contained prompt.
             const callDeepSeek = async (promptText, freshPrompt = promptText, callAttachments = attachments) => {
                 for (let attempt = 0; ; attempt++) {
                     throwIfAborted(requestAbort.signal);
@@ -2886,7 +2599,6 @@ const server = http.createServer(async (req, res) => {
                 }
             };
 
-            // Reads the DeepSeek SSE stream — returns { content, reasoningContent, messageId, finishReason, modelError }
             async function readDeepSeekResponse(call, onProgress = null) {
                 let buffer = '';
                 let lastPath = null;
@@ -2972,7 +2684,7 @@ const server = http.createServer(async (req, res) => {
                     else if(fullContent.trim())interceptedContent=fullContent;
                 };
 
-                const decoder = new TextDecoder();  // one instance: preserves multi-byte (Cyrillic/emoji) split across chunks
+                const decoder = new TextDecoder();
                 for await (const chunk of readStreamWithTimeouts(call.resp)) {
                     buffer += decoder.decode(chunk, { stream: true });
                     const lines = buffer.split('\n');
@@ -2986,8 +2698,6 @@ const server = http.createServer(async (req, res) => {
                 if (buffer) handleLine(buffer);
                 if (onProgress) onProgress(fullContent, reasoningContent);
 
-                // DeepSeek marks an answer cut off at its output limit as
-                // INCOMPLETE; expose it as 'length' so continuation kicks in.
                 if (!finishReason && /^INCOMPLETE$/i.test(String(responseStatus || ''))) finishReason = 'length';
 
                 if (newMessageId) {
@@ -3012,8 +2722,6 @@ const server = http.createServer(async (req, res) => {
             try {
                 const initialCall = await callDeepSeek(fullPrompt, freshPromptBuild.prompt);
                 if (initialCall.promptUsed !== fullPrompt) {
-                    // The planned delta could not be used (account rotation or
-                    // session rollover): the new chat got the full prompt.
                     fullPrompt = initialCall.promptUsed;
                     if (freshPromptBuild.compacted) {
                         promptCompacted = true;
@@ -3022,9 +2730,6 @@ const server = http.createServer(async (req, res) => {
                 }
                 firstResult = await readDeepSeekResponse(initialCall, liveProgress());
             } catch (error) {
-                // A remote chat that overflowed is rejected with HTTP 400 even
-                // after one fresh-chat attempt. Let the compaction loop below
-                // retry with smaller prompts instead of failing immediately.
                 if (!isContextTooLongError(error)) throw error;
                 console.log(`${agentTag} DeepSeek rejected the prompt as too long; retrying with a compacted prompt.`);
                 resetRemoteSession(session);
@@ -3033,7 +2738,6 @@ const server = http.createServer(async (req, res) => {
             const canRecoverReplacement = !NEW_CHAT_EACH_MESSAGE;
             if(canRecoverReplacement && (firstResult.replacementDetected || isReplacementStub(firstResult)) && !clientGone && !deadlineHit()) {
                 console.log('[DS-API] Replacement stub detected; retrying once in a new chat with client history.');
-                // Replay only this conversation. A blocked replacement never enters history.
                 const captured=firstResult.interceptedContent;
                 const replay=captured && !isReplacementStub({content:captured})
                     ? [...messages,{role:'assistant',content:captured},{role:'user',content:'Please provide the complete answer to my last request.'}]
@@ -3056,13 +2760,8 @@ const server = http.createServer(async (req, res) => {
             const elapsed = Date.now() - startTime;
             console.log(`${agentTag} Got ${fullContent.length} chars (+${reasoningContent.length} reasoning chars) in ${elapsed}ms (msg#${session.messageCount})`);
 
-            // Empty/context-overflow/rate-limit recovery. Each retry gets a
-            // fresh remote session and, for overflows, a smaller prompt;
-            // bounded attempts prevent retry storms.
             let retryAttempt = 0;
             while (!fullContent || fullContent.trim().length === 0) {
-                // Stop early if the client hung up or we've blown the request budget —
-                // no point burning more PoW solves + account quota for a dead socket.
                 if (clientGone) {
                     console.log(`${agentTag} client disconnected; abandoning empty-retry loop`);
                     resetRemoteSession(session);
@@ -3092,14 +2791,11 @@ const server = http.createServer(async (req, res) => {
                 const reason = contextTooLong ? 'context-too-long response' : (modelError ? 'rate-limited response' : 'empty response');
                 console.log(`${agentTag} ${reason} (msg#${session.messageCount}, retry ${retryAttempt}/${MAX_EMPTY_RETRIES}, prompt=${retryPrompt.length} chars). Resetting session...`);
                 resetRemoteSession(session);
-                // Brief delay before retry to let DeepSeek breathe
                 await new Promise(r => setTimeout(r, Math.min(500 * retryAttempt, 1500)));
                 const retryCall = await callDeepSeek(retryPrompt);
                 const retryState = normalizeRetryResponse(await readDeepSeekResponse(retryCall, liveProgress()));
                 fullPrompt = retryPrompt;
                 modelError = retryState.modelError;
-                // A previous empty response may have carried finish_reason=length.
-                // Never leak it into a successful retry that supplied no reason.
                 finishReason = retryState.finishReason;
                 if (retryState.content && retryState.content.trim().length > 0) {
                     console.log(`${agentTag} Retry ${retryAttempt} succeeded`);
@@ -3137,10 +2833,6 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
-            // Auto-continuation: DeepSeek stopped at its output limit
-            // (finish_reason 'length' / status INCOMPLETE), so ask for the rest.
-            // Complete answers are never "continued", however long they are:
-            // appending extra text would corrupt large tool-call arguments.
             let continuationRounds = 0;
             const MAX_CONTINUATION = 2;
             while (finishReason === 'length' && simulatedGenerationSettings(params).maxTokens===null && continuationRounds < MAX_CONTINUATION) {
@@ -3155,22 +2847,14 @@ const server = http.createServer(async (req, res) => {
                 );
                 let continuationCall;
                 try {
-                    // The reused chat already has this turn's images.
                     continuationCall = await callDeepSeek('continue', continuationRecoveryPrompt, attachments && { ...attachments, delta: [] });
                 } catch (error) {
-                    // The answer so far is still useful: return it as truncated
-                    // (finish_reason 'length') instead of failing the request.
                     if (requestAbort.signal.aborted) throw error;
                     console.log(`${agentTag} Continuation failed (${error.message}); returning the partial answer`);
-                    // The call may have left an empty replacement chat behind.
                     resetRemoteSession(session);
                     break;
                 }
                 const { account: contAccount } = continuationCall;
-                // A cross-account continuation is valid only when the call
-                // detected that reset and sent the full recovery prompt. If an
-                // unexpected rotation ever bypasses that guard, discard the new
-                // remote session before returning to the client (#20).
                 if (!isContinuationRecoverySafe(contBeforeId, continuationCall)) {
                     console.log(`${agentTag} continuation rotated to ${contAccount.id} ≠ ${contBeforeId} — skipping (foreign session)`);
                     continuationCall.resp.abortController?.abort(new Error('foreign session'));
@@ -3179,8 +2863,6 @@ const server = http.createServer(async (req, res) => {
                 }
                 let contResult;
                 try {
-                    // Not streamed live: the continuation is only kept if it
-                    // passes the checks below; finish() sends the kept part.
                     contResult = await readDeepSeekResponse(continuationCall);
                     if (isRateLimitError(contResult.modelError)) {
                         const retryAfter = String(Math.ceil(RATE_LIMIT_COOLDOWN_MS / 1000));
@@ -3212,8 +2894,6 @@ const server = http.createServer(async (req, res) => {
                 toolCall = null;
             }
 
-            // Retry once if legacy, XML, or DSML tool markup was truncated or
-            // malformed. Never pass raw DSML through as a normal assistant turn.
             if (allowedToolNames.size > 0 && !toolCall && looksLikeToolCallMarkup(fullContent) && !clientGone && !deadlineHit()) {
                 console.log(`${agentTag} Tool-call markup detected but invalid/truncated (${fullContent.length} chars). Retrying with stricter prompt...`);
                 resetRemoteSession(session);
@@ -3233,7 +2913,6 @@ const server = http.createServer(async (req, res) => {
                         reasoningContent = retryResult2.reasoningContent ? sanitizeContent(retryResult2.reasoningContent) : '';
                         toolCall = retryTc;
                     } else if (!looksLikeToolCallMarkup(retryContent2)) {
-                        // The model chose to answer in plain text this time.
                         console.log(`${agentTag} Strict retry returned a plain answer instead of tool markup.`);
                         fullContent = retryContent2;
                         reasoningContent = retryResult2.reasoningContent ? sanitizeContent(retryResult2.reasoningContent) : '';
@@ -3262,9 +2941,6 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
-            // Check if tool results of the current turn contained a screenshot path.
-            // If so, and the response doesn't already have MEDIA:, inject it so the gateway
-            // delivers the file to Telegram.
             if (!toolCall && !fullContent.includes('MEDIA:')) {
                 const screenshotPaths = extractScreenshotPaths(messages);
                 if (screenshotPaths.length > 0) {
@@ -3274,8 +2950,6 @@ const server = http.createServer(async (req, res) => {
             }
 
             if (clientGone) {
-                // The answer will never reach the client, so the remote chat
-                // now holds a turn the client does not know about.
                 resetRemoteSession(session);
                 console.log(`${agentTag} client disconnected before the answer was sent; discarding it`);
                 return;
@@ -3288,8 +2962,6 @@ const server = http.createServer(async (req, res) => {
                 if(params.regenerate===true && agentSession.history.at(-1)?.user===recoveryPrompt)agentSession.history.pop();
                 storeHistory(agentSession, prompt, fullContent, toolCall);
             }
-            // Remember what the remote chat now holds, so the next request of
-            // this conversation sends only its new messages.
             if (session.id) {
                 session.sentMessageKeys = plan.keys;
                 session.contextKey = contextKey;
@@ -3306,13 +2978,8 @@ const server = http.createServer(async (req, res) => {
             console.log(`${agentTag} ${stream ? 'Streamed' : 'Response'} ${apiMode} (tool=${!!toolCall}, ${Date.now() - startTime}ms, ${fullContent.length} chars)`);
         } catch (e) {
             console.log('[DS-API] Error:', e.message);
-            // If DeepSeek accepted a completion, the remote chat may now hold a
-            // turn the client never saw. Errors before that (PoW, chat
-            // creation, throttling) leave the chat intact for the next request.
             const failure = remoteTouched && activeSession && activeSession.id ? resetRemoteSession(activeSession) : null;
             if (clientGone) return;
-            // Pool exhaustion / no-auth carry an explicit status so integrators see
-            // 429/503 (not a generic 500) and can honor Retry-After.
             const timedOut = isTimeoutError(e);
             const status = e.status || (timedOut ? 504 : 500);
             const headers = {};
@@ -3400,7 +3067,6 @@ async function main() {
         else console.error('[DS-API] server error:', err);
         process.exit(1);
     });
-    // Periodically evict idle sessions (unref'd so it never keeps the process alive).
     setInterval(sweepIdleSessions, 10 * 60 * 1000).unref();
     server.listen(PORT, HOST, () => {
         console.log(`[DS-API] Server on http://${HOST}:${PORT} (multi-agent sessions enabled)`);
@@ -3416,10 +3082,8 @@ async function main() {
 }
 
 if (require.main === module) {
-    // Don't let a stray rejection/throw take the whole proxy down silently.
     process.on('unhandledRejection', (reason) => console.error('[DS-API] unhandledRejection:', reason));
     process.on('uncaughtException', (err) => console.error('[DS-API] uncaughtException:', err));
-    // Graceful shutdown: stop accepting, drain, then exit (force-exit after 10s).
     const shutdown = (sig) => {
         console.log(`[DS-API] ${sig} received — shutting down…`);
         server.close(() => process.exit(0));

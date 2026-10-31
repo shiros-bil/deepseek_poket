@@ -10,7 +10,6 @@ app/src/main/jniLibs/
 *.log
 artifacts/
 
-# Local account data and IDE files
 **/accounts/*.json
 .idea/
 .vscode/

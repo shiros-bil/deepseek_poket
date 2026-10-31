@@ -7,7 +7,7 @@ from xml.sax.saxutils import escape
 root=Path(__file__).resolve().parent.parent
 icons=root/'app/src/main/assets/ui/icons'
 urls={p.stem:'data:image/svg+xml;base64,'+base64.b64encode(p.read_bytes()).decode('ascii') for p in sorted(icons.glob('*.svg'))}
-(icons.parent/'icons.js').write_text('// Original Lucide SVG bytes, embedded for offline WebView masks. See third-party/lucide.json.\nconst ICON_URLS='+json.dumps(urls,separators=(',',':'))+';\n',encoding='utf-8')
+(icons.parent/'icons.js').write_text('const ICON_URLS='+json.dumps(urls,separators=(',',':'))+';\n',encoding='utf-8')
 
 def geometry(el):
     tag=el.tag.split('}')[-1]
@@ -25,7 +25,7 @@ def geometry(el):
 for source,target,background in [('server','ic_notification',False)]:
     tree=ET.parse(icons/(source+'.svg')).getroot()
     size=48 if background else 24
-    lines=[f'<!-- Geometry from Lucide {source}.svg; see assets/licenses/Lucide.txt. -->',f'<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="{size}dp" android:height="{size}dp" android:viewportWidth="24" android:viewportHeight="24">']
+    lines=[f'<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="{size}dp" android:height="{size}dp" android:viewportWidth="24" android:viewportHeight="24">']
     if background:lines.append('<path android:fillColor="#111111" android:pathData="M0,0h24v24h-24z"/>')
     for el in tree:
         lines.append(f'<path android:pathData="{escape(geometry(el))}" android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFF" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round"/>')

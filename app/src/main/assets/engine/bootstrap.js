@@ -1,6 +1,4 @@
 'use strict';
-// Android adapter. server.js uses the Android edition's two-model policy;
-// upstream lib/*.js remains unchanged.
 const fs = require('fs');
 const path = require('path');
 const util = require('util');
@@ -26,7 +24,6 @@ for (const level of ['log','info','warn','error']) {
     } catch (_) {}
   };
 }
-// Same .env parser as the desktop version, including quoted values.
 fs.writeFileSync(path.join(root, 'android.env'), config.envText || '', {mode:0o600});
 require('./lib/env').loadDotEnv(path.join(root, 'android.env'));
 Object.assign(process.env, {
@@ -39,8 +36,6 @@ Object.assign(process.env, {
   PROXY_CORS_ALLOW_ANY:config.publicEnabled&&config.tunnelAllowAnyOrigin!==false?'1':'0',
   PROXY_CORS_ORIGINS:config.tunnelOrigins||''
 });
-// Mobile V8 builds may disable WASM tiering threads. The solver still uses the
-// normal WebAssembly API and the upstream challenge format without changes.
 process.chdir(__dirname);
 process.argv = [process.argv[0], path.join(__dirname, 'server.js')];
 require('module').runMain(process.argv[1]);

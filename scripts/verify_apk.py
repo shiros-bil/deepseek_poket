@@ -22,7 +22,6 @@ with zipfile.ZipFile(apk) as archive:
                 offset = phoff + index * entsize
                 if struct.unpack_from('<I', data, offset)[0] == 1:
                     alignment = struct.unpack_from('<Q' if wide else '<I', data, offset + (48 if wide else 28))[0]
-                    # Android's 16 KB page mode applies to 64-bit ABIs.
                     assert alignment >= (16384 if wide else 4096), (filename, alignment)
                     alignments.append(alignment)
             assert alignments

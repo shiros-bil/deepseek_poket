@@ -7,6 +7,7 @@
 | LLVM libc++ runtime | Android NDK r28c; JNI compiled with r27c, `27.2.12479018` | NDK notices in `app/src/main/assets/licenses/Android-NDK-NOTICE.txt` |
 | Lucide SVG icons | Pinned commit `2ca268e74888d3506b3319fb8f94aaaaf70ceca9` | ISC + Feather MIT, included in `app/src/main/assets/licenses/Lucide.txt` |
 | DeepSeek launcher mark | Lobe Icons; provenance in `third-party/deepseek/provenance.json` | MIT, included in `app/src/main/assets/licenses/Lobe-Icons.txt`; DeepSeek brand mark |
+| Gradle Wrapper scripts | Gradle 8.7 | Apache-2.0; see `gradle/wrapper/NOTICE.txt` and `gradle/wrapper/LICENSE.txt` |
 
 Pinned Android runtime artifact:
 

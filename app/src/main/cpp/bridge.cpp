@@ -11,7 +11,6 @@ Java_ai_freedeepseek_pocket_ProxyService_startNode(JNIEnv* env, jobject, jstring
     chdir(root);
     setenv("HOME", root, 1);
     setenv("TMPDIR", root, 1);
-    // node::Start expects all argv strings in one contiguous allocation.
     size_t bytes = 5 + strlen(file) + 1 + strlen(root) + 1;
     char* storage = static_cast<char*>(malloc(bytes));
     char* argv[3];

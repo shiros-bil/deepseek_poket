@@ -1,5 +1,3 @@
-// Smoke check against the debug APK running in our isolated emulator.
-// Uses only the offline account installed by the test setup. Never prints keys.
 const {execFileSync}=require('node:child_process');
 const assert=require('node:assert/strict');
 const path=require('node:path');

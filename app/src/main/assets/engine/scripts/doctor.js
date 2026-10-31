@@ -61,8 +61,6 @@ async function liveCheck(auth) {
     const text = await r.text();
     let challenge = null;
     try { challenge = JSON.parse(text)?.data?.biz_data?.challenge || null; } catch {}
-    // An expired login still answers 200 with "biz_data": null; only a real
-    // challenge proves the credentials work.
     checks.push({ name: 'pow challenge', ok: r.ok && Boolean(challenge), status: r.status, detail: challenge ? '' : text.substring(0, 120) });
   } catch (e) {
     checks.push({ name: 'pow challenge', ok: false, error: e.message });

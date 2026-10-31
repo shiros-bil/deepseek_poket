@@ -9,10 +9,6 @@ const ROOT = path.resolve(__dirname, '..');
 if (require.main === module) loadDotEnv(path.join(ROOT, '.env'));
 const DEFAULT_WASM = 'https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm';
 
-// Where a new/updated login is written. Mirrors how server.js discovers auth
-// files: DEEPSEEK_AUTH_DIR wins, then DEEPSEEK_AUTH_PATH (for a comma list the
-// first entry), then ./deepseek-auth.json. A comma list is never used as one
-// literal file name.
 function defaultAuthOutputPath(env = process.env, root = ROOT) {
   if (env.DEEPSEEK_AUTH_DIR) return path.join(env.DEEPSEEK_AUTH_DIR, 'deepseek-auth.json');
   const first = String(env.DEEPSEEK_AUTH_PATH || '').split(',').map(s => s.trim()).find(Boolean);
@@ -35,7 +31,6 @@ function ask(question) {
   return new Promise(resolve => {
     let answered = false;
     rl.question(question, ans => { answered = true; rl.close(); resolve(ans); });
-    // Closed/non-interactive stdin: resolve empty instead of hanging or exiting 0.
     rl.on('close', () => { if (!answered) resolve(''); });
   });
 }
@@ -45,7 +40,6 @@ function readJson(file) {
 }
 function cookieArrayToHeader(cookies) {
   return cookies
-    // Only deepseek.com and its subdomains; never look-alike domains.
     .filter(c => c && c.name && c.value && /(^|\.)deepseek\.com$/i.test(String(c.domain || '').trim()))
     .map(c => `${String(c.name).trim()}=${String(c.value).trim()}`)
     .filter(Boolean)

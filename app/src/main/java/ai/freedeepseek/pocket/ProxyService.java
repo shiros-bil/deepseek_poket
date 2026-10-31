@@ -87,8 +87,6 @@ public class ProxyService extends Service {
     private void shutdown() {
         stopping=true;if(tunnel!=null)tunnel.stop();
         releaseLocks(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf();
-        // Node can only be initialized once per process. Isolate it from the UI
-        // and terminate this service process so the next Start gets a clean VM.
         new Handler(Looper.getMainLooper()).postDelayed(() -> android.os.Process.killProcess(android.os.Process.myPid()),150);
     }
     @Override public void onDestroy() { stopping=true;started=false;if(tunnel!=null)tunnel.stop();releaseLocks();super.onDestroy(); }

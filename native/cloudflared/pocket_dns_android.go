@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// Android has no resolv.conf. The app supplies DNS servers for its active
-// network, including SRV lookups used by edge discovery. No TLS settings change.
 func init() {
 	servers := strings.FieldsFunc(os.Getenv("POCKET_DNS_SERVERS"), func(r rune) bool { return r == ',' || r == ' ' })
 	if len(servers) == 0 {

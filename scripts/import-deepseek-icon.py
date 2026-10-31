@@ -7,8 +7,6 @@ source=root/'third-party/deepseek/deepseek.svg'
 svg=ET.parse(source).getroot()
 
 def normalize_path(data):
-    # Android PathParser requires separate arc flags; SVG also permits compact
-    # forms such as `a 1 1 0 01.5 .2`. Preserve geometry and separate tokens.
     counts={'M':2,'L':2,'H':1,'V':1,'C':6,'S':4,'Q':4,'T':2,'A':7}
     number=re.compile(r'[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:[eE][-+]?\d+)?')
     pos=0;command=None;output=[]

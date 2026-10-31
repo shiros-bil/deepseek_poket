@@ -29,7 +29,6 @@ public class AuthActivity extends Activity {
         browser.getSettings().setAllowFileAccess(false); browser.getSettings().setAllowContentAccess(false);
         browser.getSettings().setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         CookieManager.getInstance().setAcceptCookie(true);
-        // No JavaScript bridge is exposed to the remote login page.
         browser.setWebViewClient(new WebViewClient() {
             @Override public boolean shouldOverrideUrlLoading(WebView v,WebResourceRequest r) {
                 if(deepseek(r.getUrl())) return false;
@@ -50,8 +49,6 @@ public class AuthActivity extends Activity {
             }
             @Override public void onPageFinished(WebView v,String url) {
                 if(!deepseek(Uri.parse(url))) return;
-                // Capture same-origin fetch headers after login, including headers
-                // not surfaced by some WebView versions to shouldInterceptRequest.
                 v.evaluateJavascript("(()=>{if(window.__pocketFetch)return;window.__pocketAuth={};window.__pocketFetch=window.fetch;window.fetch=function(input,init){try{const u=new URL(typeof input==='string'?input:input.url,location.href);if(u.hostname==='chat.deepseek.com'){const h=new Headers(init&&init.headers||(input&&input.headers)||{});for(const k of ['authorization','x-hif-dliq','x-hif-leim'])if(h.has(k))window.__pocketAuth[k]=h.get(k);}}catch(e){}return window.__pocketFetch.apply(this,arguments);};})()",null);
             }
         });

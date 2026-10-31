@@ -1,5 +1,3 @@
-// The isolated Android 11 AVD uses 320x640 at 160 dpi. Start in Settings with
-// the language picker open, as captured in the accompanying UI test setup.
 const {execFileSync}=require('node:child_process');
 const assert=require('node:assert/strict'),path=require('node:path');
 const adb=path.resolve('.tools/android-test-sdk/platform-tools/adb.exe');

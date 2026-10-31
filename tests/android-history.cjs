@@ -44,7 +44,6 @@ async function scenario(full,fresh){
    await send(endpoint,user,[...second,{role:'assistant',content:a3},{role:'user',content:'THIRD_REQUEST_X'}]);
    assert.equal(calls.at(-1).prompt.includes('ROOT_REQUEST_Z'),full);assert.ok(!calls.at(-1).prompt.includes(a2));
   }
-  // A reused app/user ID must not leak an old character's hidden context.
   for(const user of ['shared-user',undefined]){
    const first=[{role:'system',content:'ROLE_ONE'},{role:'user',content:'SECRET_OLD_CHARACTER'}];
    await send('/v1/chat/completions',user,first);const previous=calls.at(-1).chat_session_id;

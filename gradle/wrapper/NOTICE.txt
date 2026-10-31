@@ -1,0 +1,6 @@
+Gradle Wrapper scripts
+Copyright 2015-2021 the original authors.
+
+The Gradle Wrapper scripts are distributed under the Apache License, Version 2.0.
+See LICENSE.txt for the full license text.
+Source: https://github.com/gradle/gradle
